@@ -11,7 +11,8 @@ Usage:
     python common.py --yaml <config-file> --system <protobuf,baseline>
     --experiment<size,depth> --num_clients <int> --libos
     <dmtr-lwip,dmtr-rdma,dmtr-posix> --logfile <logpath>
-
+- What is the speed of typing into this.
+- It seems reasonable fast!!!!  no it's pretty slow
 - Protobuf variation supported:
     (1) size of protobuf being processed for a basic GetMessage
     (2) the complexity of the protobuf (number of leaves in a binary tree)
@@ -25,10 +26,10 @@ Usage:
 """
 ## CONSTANTS #########################################################
 SIZES = [100, 500, 1000, 2000, 4000, 4096, 6000, 8000]
-BASE_PROTOBUF = "stress.GetMessage"
+BASE_MESSAGE = "Get"
 BASE_SIZE = 4096
-PROTOBUFS = ["stress.GetMessage", "stress.Msg1L", "stress.Msg2L",
-                "stress.Msg3L", "stress.Msg4L", "stress.Msg5L"]
+MESSAGES = ["Get", "Msg1L", "Msg2L",
+            "Msg3L", "Msg4L", "Msg5L"]
 NUM_TRIALS = 5
 ######################################################################
 def debug(*args):
@@ -41,7 +42,8 @@ def parse_args():
                         help = "Experiment yaml file.",
                         required=True)
     parser.add_argument("-s", "--system",
-                        choices = ["protobuf", "baseline"],
+                        choices = ["protobuf", "baseline",
+                        "flatbuffers", "capnproto"],
                         help = "Which system to benchmark.",
                         required=True)
     parser.add_argument("-e", "--experiment",
@@ -61,20 +63,32 @@ def parse_args():
     parser.add_argument("-p", "--pprint",
                         help = "Print out commands that will be run",
                         action="store_true")
+    parser.add_argument("-r", "--no_retries",
+                        help = "Run without retries",
+                        action = "store_true")
+    parser.add_argument("-c", "--clients",
+                        help = "Number of client threads within the echo server.",
+                        type = int,
+                        default = 1)
+    parser.add_argument("-pf", "--perf",
+                        help = "Run perf server side to observe cache statistics",
+                        action = "store_true")
     return parser.parse_args()
 
-def calculate_log_path(args, trial, exp, size, protobuf = None):
+def calculate_log_path(args, trial, exp, size, message = None):
     if args["system"] == "baseline":
-        return "{}/baseline/size_{}/{}/trial_{}".format(
+        return "{}/baseline/{}/size_{}/{}/trial_{}".format(
                 args["logfile"],
+                message,
                 size,
                 exp,
                 trial)
     else:
-        assert(protobuf != None)
-        return "{}/protobuf_{}/size_{}/{}/trial_{}".format(
+        assert(message != None)
+        return "{}/{}/{}/size_{}/{}/trial_{}".format(
                 args["logfile"],
-                protobuf,
+                args["system"], # could be protobuf, capnproto, proto3
+                message,
                 size,
                 exp,
                 trial)
@@ -93,20 +107,32 @@ def cleanup(args):
     for idx in range(1, args["num_clients"] + 1):
         kill_client(args, idx)
     debug("Done with cleanup, starting experiment.")
-    exit(1)
 
-def start_server(args, trial, exp, size, protobuf = None):
+def start_server(args, trial, exp, size, message = None):
     # prepare the logpath
     # for perf: prepend something like
     # perf stat -e task-clock,cycles, instructions,cache-references,cache-misses
-    os.makedirs(calculate_log_path(args, trial, exp, size, protobuf), exist_ok = True) 
-    cmd = "sudo {exec_dir}/{libos}-server --port {port} --config-path {config_path}".format(**args)
+    #  sudo perf stat -e L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores
+    
+    os.makedirs(calculate_log_path(args, trial, exp, size, message), exist_ok = True) 
+    cmd = "sudo "
+    if args["perf"]:
+        debug("Running with perf")
+        cmd += "perf stat -e "
+        cmd += "task-clock,cycles,instructions,cache-references,cache-misses"
+        cmd += ",L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores"
+        cmd += ",dTLB-loads,dTLB-load-misses,dTLB-prefetch-misses"
+        cmd += ",LLC-loads,LLC-load-misses,LLC-stores,LLC-prefetch"
+    cmd += " {exec_dir}/{libos}-server --port {port} --config-path {config_path}".format(**args)
     host = args["hosts"]["server"]["addr"]
+
+    cmd += " -s {}".format(size)
     
-    if protobuf is not None:
-        cmd += " -s {} --protobuf {}".format(size, protobuf)
+    if message is not None:
+        cmd += " --system {} --message {}".format(args["system"], message)
     
-    logpath = "{}/server".format(calculate_log_path(args, trial, exp, size, protobuf))
+    logpath = "{}/server".format(calculate_log_path(args, trial, exp, size,
+        message))
     cmd += " > {} 2> {}".format("{}.log".format(logpath),
             "{}.err.log".format(logpath))
     
@@ -116,16 +142,19 @@ def start_server(args, trial, exp, size, protobuf = None):
     proc = multiprocessing.Process(target = run_cmd, args=(cmd, host, args, True))
     return proc
 
-def start_client(args, idx, trial, exp, size, protobuf = None):
-    cmd = "sudo {exec_dir}/{libos}-client --port {port} --config-path {config_path} -i {iterations} --retry".format(**args)
+def start_client(args, idx, trial, exp, size, message = None):
+    cmd = "sudo {exec_dir}/{libos}-client --port {port} --config-path {config_path} -i {iterations}".format(**args)
+    if args["retry"]:
+        cmd += " --retry"
     cmd += " -s {}".format(size)
+    cmd += " -c {}".format(args["clients"])
     host = args["hosts"]["client{}".format(idx)]["addr"]
 
-    if protobuf is not None:
-        cmd += " --protobuf {}".format(protobuf)
+    if message is not None:
+        cmd += " --system {} --message {}".format(args["system"], message)
 
     logpath = "{}/client{}".format(calculate_log_path(args, trial, exp, size,
-        protobuf), idx)
+        message), idx)
     cmd += " > {} 2> {}".format("{}.log".format(logpath),
             "{}.err.log".format(logpath))
     if args["pprint"]:
@@ -149,8 +178,9 @@ def kill_server(args):
     cxn = connection(args, host)
     try:
         # send 2 -> interrupt from keyboard
-        cxn.sudo("sudo kill  -2 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
+        cxn.sudo("sudo kill -9 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
         time.sleep(10)
+        debug("Killed server")
         return
     except:
         return False
@@ -176,15 +206,24 @@ def run_cmd(cmd, host, args, fail_ok = False):
             debug("Failed to run cmd {} on host {}.".format(cmd, host))
 
         return
-def run_tput_exp(args, trial, size, num_clients, protobuf = None):
+def run_tput_exp(args, trial, size, num_clients, message = None):
     # start server
     exp = "{}clients".format(num_clients)
-    debug("Running exp: trial {}, size {}, protobuf {}, clients {}".format(
+    if os.path.exists(calculate_log_path(args, trial, exp, size, message)):
+        debug("Exp: trial {}, size {}, system {}, message {}, clients {} exists, skipping".format(
             trial,
             size,
-            protobuf,
+            args["system"],
+            message,
             num_clients))
-    server_proc = start_server(args, trial, exp, size, protobuf)
+        return
+    debug("Running exp: trial {}, size {}, system {}, message {}, clients {}".format(
+            trial,
+            size,
+            args["system"],
+            message,
+            num_clients))
+    server_proc = start_server(args, trial, exp, size, message)
     if not args["pprint"]:
         server_proc.start()
         time.sleep(3)
@@ -192,7 +231,7 @@ def run_tput_exp(args, trial, size, num_clients, protobuf = None):
     # start each client
     client_procs = []
     for i in range(1, num_clients + 1):
-        client_procs.append(start_client(args, i, trial, exp, size, protobuf))
+        client_procs.append(start_client(args, i, trial, exp, size, message))
     
     if args["pprint"]:
         return
@@ -214,16 +253,15 @@ def cycle_exps(args):
                 if size == BASE_SIZE:
                     continue
                 for num_clients in range(1, args["num_clients"] + 1):
-                    protobuf = BASE_PROTOBUF if args["system"] == "protobuf" else None
-                    run_tput_exp(args, trial, size, num_clients, protobuf)
+                    message = BASE_MESSAGE if args["system"] != "baseline" else None
+                    run_tput_exp(args, trial, size, num_clients, message)
         else:
-            for protobuf in PROTOBUFS:
+            for message in MESSAGES:
                 for num_clients in range(1, args["num_clients"] + 1):
-                    run_tput_exp(args, trial, BASE_SIZE, num_clients, protobuf)
+                    run_tput_exp(args, trial, BASE_SIZE, num_clients, message)
 
 
-def main():
-    args = parse_args()
+def parse_params(args):
     with open(args.yaml) as f:
         data = yaml.load(f)
 
@@ -232,9 +270,19 @@ def main():
     data["num_clients"] = args.num_clients # number of available clients to
     data["logfile"] = args.logfile # folder
     data["pprint"] = args.pprint # just print commands
-    data["experiment"] = args.experiment # size or depth
-    if args.experiment == "depth":
-        assert(args.system == "protobuf")
+    data["clients"] = args.clients
+    data["perf"] = args.perf
+    data["retry"] = True if (not(args.no_retries)) else False
+    if "experiment" in args:
+        data["experiment"] = args.experiment # size or depth
+        if args.experiment == "depth":
+            assert(args.system != "baseline")
+    return data
+
+
+def main():
+    args = parse_args()
+    data = parse_params(args)
     # run cleanup
     cleanup(data)
     cycle_exps(data)
