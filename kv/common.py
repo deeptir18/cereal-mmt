@@ -7,7 +7,9 @@ import yaml
 import time
 #########
 WORKLOADS = ["workloada", "workloadb", "workloadc"]
+NUM_TRIALS = 5
 #########
+
 def debug(*args):
     prepend = "\u2192"
     print(prepend, *args, file=sys.stderr)
@@ -99,7 +101,7 @@ def start_server(args, trial, workload, num_clients):
     exp = "{}clients".format(num_clients)
     baselog = calculate_log_path(args, trial, workload, exp)
     if not args["pprint"]:
-        os.makedirs(baselog)
+        os.makedirs(baselog, exist_ok = True)
     loads = "{}/{}/{}-{}.load".format(
                                 args["ycsb_root"],
                                 workload,
@@ -132,6 +134,9 @@ def start_client(args, idx, trial, workload, num_clients):
                                         workload,
                                         num_clients)
     cmd += " --access {} --id {}".format(access_file, idx - 1)
+    if (args["system"] == "protobuf"):
+        # for protobuf, need a larger timeout for retries
+        cmd += " --timeout 4000000"
     cmd += " > {} 2> {}".format(
                 "{}.log".format(logpath),
                 "{}.err.log".format(logpath))
@@ -168,9 +173,9 @@ def run_exp(args, trial, workload, num_clients):
             num_clients))
     server_proc = start_server(args, trial, workload, num_clients)
     if not args["pprint"]:
+        print("Starting server!")
         server_proc.start()
         time.sleep(3)
-    
     # start each client
     client_procs = []
     for i in range(1, num_clients + 1):
@@ -192,7 +197,7 @@ def run_exp(args, trial, workload, num_clients):
 def cycle_exps(args):
     for trial in range(0, NUM_TRIALS):
         for workload in WORKLOADS:
-            for clients in (1, args["num_clients"] + 1):
+            for clients in range(1, args["num_clients"] + 1):
                 run_exp(args, trial, workload, clients)
 
 def parse_params(args):

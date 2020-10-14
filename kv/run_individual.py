@@ -44,7 +44,7 @@ def analyze_exp(data, final_path, num_clients):
         medians.append(median)
         all_retries += retries
         tput = 1.0 / avg * 1000
-        debug("Client {} tput: {:.2f} req/ms ,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(i, tput, avg, p99, median, retries))
+        debug("Client {} tput: {:.2f} req/ms, avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(i, tput, avg, p99, median, retries))
     # full tput
     avg = mean(avgs)
     p99 = mean(p99s)

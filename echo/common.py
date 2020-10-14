@@ -16,7 +16,7 @@ Usage:
 - Protobuf variation supported:
     (1) size of protobuf being processed for a basic GetMessage
     (2) the complexity of the protobuf (number of leaves in a binary tree)
-- Experiments:
+: Experiments:
     (1) Protobuf vs. non encoded message latency while size varies
     (2) Protobuf complexity
 - Measurements:
@@ -25,7 +25,8 @@ Usage:
     scalability, just pick a number of clients to run the experiment from)
 """
 ## CONSTANTS #########################################################
-SIZES = [100, 500, 1000, 2000, 4000, 4096, 6000, 8000]
+#SIZES = [100, 500, 1000, 2000, 4000, 4096, 6000, 8000]
+SIZES = [128, 256, 512, 1024, 2048, 8000] # for the PCIe experiments
 BASE_MESSAGE = "Get"
 BASE_SIZE = 4096
 MESSAGES = ["Get", "Msg1L", "Msg2L",
@@ -43,9 +44,13 @@ def parse_args():
                         required=True)
     parser.add_argument("-s", "--system",
                         choices = ["protobuf", "baseline",
-                        "flatbuffers", "capnproto"],
+                            "flatbuffers", "capnproto",
+                            "malloc_baseline", "protobytes", "malloc_no_str",
+                            "memcpy", "single_memcpy"],
+                        nargs = "+",
                         help = "Which system to benchmark.",
                         required=True)
+    parser.add_argument("-seg", "--segments", type=int, help = "Number of segments in sga.", default = 1)
     parser.add_argument("-e", "--experiment",
                         choices = ["size", "depth"],
                         required = True)
@@ -73,12 +78,16 @@ def parse_args():
     parser.add_argument("-pf", "--perf",
                         help = "Run perf server side to observe cache statistics",
                         action = "store_true")
+    parser.add_argument("-z", "--zero_copy",
+                    help = "Zero copy mode on",
+                    action = "store_true")
     return parser.parse_args()
 
 def calculate_log_path(args, trial, exp, size, message = None):
-    if args["system"] == "baseline":
-        return "{}/baseline/{}/size_{}/{}/trial_{}".format(
+    if "baseline" in args["system"]:
+        return "{}/{}/{}/size_{}/{}/trial_{}".format(
                 args["logfile"],
+                args["system"],
                 message,
                 size,
                 exp,
@@ -104,18 +113,19 @@ def connection(args, host):
 # kill any rogue processes on server
 def cleanup(args):
     cleanup_server(args)
-    for idx in range(1, args["num_clients"] + 1):
+    for idx in range(1, 10):
         kill_client(args, idx)
-    debug("Done with cleanup, starting experiment.")
+    debug("Done with  cleanup, starting experiment.")
+    # exit(1)
 
 def start_server(args, trial, exp, size, message = None):
     # prepare the logpath
     # for perf: prepend something like
     # perf stat -e task-clock,cycles, instructions,cache-references,cache-misses
     #  sudo perf stat -e L1-dcache-loads,L1-dcache-load-misses,L1-dcache-stores
-    
-    os.makedirs(calculate_log_path(args, trial, exp, size, message), exist_ok = True) 
-    cmd = "sudo "
+    if not args["pprint"]:
+        os.makedirs(calculate_log_path(args, trial, exp, size, message), exist_ok = True) 
+    cmd = "sudo nice -n -20 taskset 0x1 "
     if args["perf"]:
         debug("Running with perf")
         cmd += "perf stat -e "
@@ -131,10 +141,16 @@ def start_server(args, trial, exp, size, message = None):
     if message is not None:
         cmd += " --system {} --message {}".format(args["system"], message)
     
+    if args["segments"] > 1:
+        cmd += " --sgasize {}".format(args["segments"])
+    ## for the zero copy experiments
+    if args["zero_copy"]:
+        cmd += " --zero-copy"
     logpath = "{}/server".format(calculate_log_path(args, trial, exp, size,
         message))
     cmd += " > {} 2> {}".format("{}.log".format(logpath),
             "{}.err.log".format(logpath))
+
     
     if args["pprint"]:
         debug(host, ": ", cmd)
@@ -152,9 +168,13 @@ def start_client(args, idx, trial, exp, size, message = None):
 
     if message is not None:
         cmd += " --system {} --message {}".format(args["system"], message)
+    ## for zero copy
+    if args["zero_copy"]:
+        cmd += " --zero-copy"
 
-    logpath = "{}/client{}".format(calculate_log_path(args, trial, exp, size,
-        message), idx)
+    logpath = "{}/client{}".format(calculate_log_path(args, trial, exp, size, message), idx)
+    if args["segments"] > 1:
+        cmd += " --sgasize {}".format(args["segments"])
     cmd += " > {} 2> {}".format("{}.log".format(logpath),
             "{}.err.log".format(logpath))
     if args["pprint"]:
@@ -168,8 +188,16 @@ def cleanup_server(args):
     host = args["hosts"]["server"]["addr"]
     cxn = connection(args, host)
     try:
-        cxn.sudo("sudo kill  -9 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n4`".format(**args), hide = True)
+        cxn.sudo("sudo kill  -9 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
+        time.sleep(10)
+        cxn.sudo("sudo killall {libos}-server".format(**args), hide = True)
+        debug("Killed server")
     except:
+        try:
+            cxn.sudo("sudo killall {libos}-server".format(**args), hide = True)
+            debug("Used killall to kill server")
+        except:
+            return False
         return False
 
 
@@ -177,12 +205,17 @@ def kill_server(args):
     host = args["hosts"]["server"]["addr"]
     cxn = connection(args, host)
     try:
-        # send 2 -> interrupt from keyboard
-        cxn.sudo("sudo kill -9 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
+        cxn.sudo("sudo kill -15 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
         time.sleep(10)
+        cxn.sudo("sudo killall {libos}-server".format(**args), hide = True)
         debug("Killed server")
         return
     except:
+        try:
+            cxn.sudo("sudo killall {libos}-server".format(**args), hide = True)
+            debug("Used killall to kill server")
+        except:
+            return False
         return False
 
 def kill_client(args, idx):
@@ -207,6 +240,7 @@ def run_cmd(cmd, host, args, fail_ok = False):
 
         return
 def run_tput_exp(args, trial, size, num_clients, message = None):
+    debug("Num clients: {}".format(num_clients))
     # start server
     exp = "{}clients".format(num_clients)
     if os.path.exists(calculate_log_path(args, trial, exp, size, message)):
@@ -248,17 +282,23 @@ def run_tput_exp(args, trial, size, num_clients, message = None):
 
 def cycle_exps(args):
     for trial in range(0, NUM_TRIALS):
-        if args["experiment"] == "size":
-            for size in SIZES:
-                if size == BASE_SIZE:
-                    continue
-                for num_clients in range(1, args["num_clients"] + 1):
-                    message = BASE_MESSAGE if args["system"] != "baseline" else None
-                    run_tput_exp(args, trial, size, num_clients, message)
-        else:
-            for message in MESSAGES:
-                for num_clients in range(1, args["num_clients"] + 1):
-                    run_tput_exp(args, trial, BASE_SIZE, num_clients, message)
+        # cycle through all the systems provided
+        for system in args["systems"]:
+            debug("Cycling for system {}.".format(system))
+            args["system"] = system
+            if args["experiment"] == "size":
+                for size in reversed(SIZES):
+                    if size == BASE_SIZE:
+                        continue
+                    for num_clients in range(1, args["num_clients"] + 1):
+                        message = BASE_MESSAGE if "baseline" not in args["system"] else None
+                        run_tput_exp(args, trial, size, num_clients, message)
+                        time.sleep(5)
+                        
+            else:
+                for message in MESSAGES:
+                    for num_clients in range(1, args["num_clients"] + 1):
+                        run_tput_exp(args, trial, BASE_SIZE, num_clients, message)
 
 
 def parse_params(args):
@@ -266,13 +306,26 @@ def parse_params(args):
         data = yaml.load(f)
 
     data["libos"] = args.libos # lwip, rdma, posix
-    data["system"] = args.system # currently: baseline, protobuf
+    data["systems"] = args.system # all of them
+    if len(args.system) == 1:
+        # for run individual script, just set the first
+        data["system"] = args.system[0]
     data["num_clients"] = args.num_clients # number of available clients to
     data["logfile"] = args.logfile # folder
     data["pprint"] = args.pprint # just print commands
     data["clients"] = args.clients
     data["perf"] = args.perf
+    data["zero_copy"] = args.zero_copy
     data["retry"] = True if (not(args.no_retries)) else False
+    if "segments" in args:
+        data["segments"] = args.segments
+        if args.segments > 1 and args.system != ["baseline"]:
+            debug("For segments greater than 1, system has to be baseline, not ", args.system)
+            exit(1)
+        if args.segments > 1:
+            debug("Setting segments as {}.".format(args.segments))
+            data["system"] = "baseline_seg{}".format(args.segments)
+            data["systems"] = ["baseline_seg{}".format(args.segments)]
     if "experiment" in args:
         data["experiment"] = args.experiment # size or depth
         if args.experiment == "depth":

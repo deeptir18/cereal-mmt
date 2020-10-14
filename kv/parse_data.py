@@ -84,7 +84,7 @@ def parse_log(logfile):
     return latency
 
 
-def parse_folder(f, final_path, workload, trial, num_clients):
+def parse_folder(f, final_path, system, workload, trial, num_clients):
     tputs = []
     p99s = []
     medians = []

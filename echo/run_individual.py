@@ -17,9 +17,13 @@ def parse_args():
                         required=True)
     parser.add_argument("-sys", "--system",
                         choices = ["protobuf", "baseline",
-                        "flatbuffers", "capnproto"],
+                        "flatbuffers", "capnproto",
+                        "malloc_baseline","protobytes", "malloc_no_str",
+                        "memcpy", "single_memcpy"],
+                        nargs="+", # for compatibility with the other script
                         help = "Which system to benchmark.",
                         default = "baseline")
+    parser.add_argument("-seg", "--segments", type=int, help = "Number of segments in sga.", default = 1)
     parser.add_argument("-m", "--message",
                         help = "message",
                         default = "get")
@@ -47,6 +51,9 @@ def parse_args():
                         action = "store_true")
     parser.add_argument("-pf", "--perf",
                         help = "Run perf server side to observe cache statistics",
+                        action = "store_true")
+    parser.add_argument("-z", "--zero_copy",
+                        help = "Zero copy mode on",
                         action = "store_true")
     return parser.parse_args()
 
@@ -98,13 +105,14 @@ def main():
     args = parse_args()
     data = parse_params(args)
     data["size"] = args.size
-    cleanup(data)
+    if not data["pprint"] and not args.analyze:
+        cleanup(data)
     # setup folder 
-    message = None if (args.system == "baseline") else args.message
+    message = None if ("baseline" in data["system"]) else args.message
     exp = "{}clients".format(args.num_clients)
     full_path = "{}/{}/{}/size_{}/{}".format(
             args.logfile,
-            args.system,
+            data["system"],
             message,
             args.size,
             exp)
@@ -122,11 +130,10 @@ def main():
         trial = "trial_{}".format(num_trials)
         full_path = full_path / trial
         run_tput_exp(data, num_trials, args.size, args.num_clients, message)
-
-        analyze_exp(data, full_path, args.num_clients)
+        if not data["pprint"]:
+            analyze_exp(data, full_path, args.num_clients)
     else:
-        for n in range(0, num_trials):
-            
+        for n in range(0, num_trials):  
             debug("######Analysis for trial {}#######".format(num_trials - 1))
             trial = "trial_{}".format(n)
             path = full_path / trial
