@@ -1,4 +1,10 @@
 kv/results
 echo/results
+echo/pinned_results
+echo/test_results
+echo/Rplots.pdf
+echo/.nfs*
+kv/.nfs*
+kv/Rplots.pdf
 *.swp
 __pycache__

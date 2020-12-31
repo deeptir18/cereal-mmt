@@ -26,12 +26,14 @@ Usage:
 """
 ## CONSTANTS #########################################################
 #SIZES = [100, 500, 1000, 2000, 4000, 4096, 6000, 8000]
-SIZES = [128, 256, 512, 1024, 2048, 8000] # for the PCIe experiments
+# SIZES = [128, 256, 512, 768, 1024, 2048, 4096, 8192] # for the PCIe experiments
+SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
 BASE_MESSAGE = "Get"
 BASE_SIZE = 4096
 MESSAGES = ["Get", "Msg1L", "Msg2L",
             "Msg3L", "Msg4L", "Msg5L"]
-NUM_TRIALS = 5
+NUM_TRIALS = 5 # finish trials 4 and 5 later
+MAX_CLIENTS = 8
 ######################################################################
 def debug(*args):
     prepend = "\u2192"
@@ -175,6 +177,9 @@ def start_client(args, idx, trial, exp, size, message = None):
     logpath = "{}/client{}".format(calculate_log_path(args, trial, exp, size, message), idx)
     if args["segments"] > 1:
         cmd += " --sgasize {}".format(args["segments"])
+
+    # record all the latencies
+    cmd += " --latlog {}.latencies.log".format(logpath)
     cmd += " > {} 2> {}".format("{}.log".format(logpath),
             "{}.err.log".format(logpath))
     if args["pprint"]:
@@ -205,7 +210,7 @@ def kill_server(args):
     host = args["hosts"]["server"]["addr"]
     cxn = connection(args, host)
     try:
-        cxn.sudo("sudo kill -15 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
+        cxn.sudo("sudo kill -9 `ps aux | grep {exec_dir}/{libos}-server | awk '{{print $2}}' | head -n3`".format(**args), hide = True)
         time.sleep(10)
         cxn.sudo("sudo killall {libos}-server".format(**args), hide = True)
         debug("Killed server")
@@ -243,20 +248,22 @@ def run_tput_exp(args, trial, size, num_clients, message = None):
     debug("Num clients: {}".format(num_clients))
     # start server
     exp = "{}clients".format(num_clients)
+    if args["clients"] > 1:
+        exp = "{}clients".format(num_clients * args["clients"])
     if os.path.exists(calculate_log_path(args, trial, exp, size, message)):
         debug("Exp: trial {}, size {}, system {}, message {}, clients {} exists, skipping".format(
             trial,
             size,
             args["system"],
             message,
-            num_clients))
+            num_clients * args["clients"]))
         return
     debug("Running exp: trial {}, size {}, system {}, message {}, clients {}".format(
             trial,
             size,
             args["system"],
             message,
-            num_clients))
+            num_clients * args["clients"]))
     server_proc = start_server(args, trial, exp, size, message)
     if not args["pprint"]:
         server_proc.start()
@@ -281,6 +288,7 @@ def run_tput_exp(args, trial, size, num_clients, message = None):
     return
 
 def cycle_exps(args):
+    original_clients = args["clients"]
     for trial in range(0, NUM_TRIALS):
         # cycle through all the systems provided
         for system in args["systems"]:
@@ -288,18 +296,40 @@ def cycle_exps(args):
             args["system"] = system
             if args["experiment"] == "size":
                 for size in reversed(SIZES):
-                    if size == BASE_SIZE:
-                        continue
-                    for num_clients in range(1, args["num_clients"] + 1):
+                    for num_clients in args["clients_list"]:
+                        if num_clients > MAX_CLIENTS:
+                            args["clients"] = int(num_clients / MAX_CLIENTS)
+                            num_clients = MAX_CLIENTS
                         message = BASE_MESSAGE if "baseline" not in args["system"] else None
+                        #debug("Exp: sys {}, size {}, message {}, num clients {}, concurrent clients {}".format(args["system"], size, message, num_clients, args["clients"]))
                         run_tput_exp(args, trial, size, num_clients, message)
-                        time.sleep(5)
-                        
+                        args["clients"] = original_clients
             else:
                 for message in MESSAGES:
-                    for num_clients in range(1, args["num_clients"] + 1):
+                    for num_clients in args["clients_list"]:
+                        if num_clients > MAX_CLIENTS:
+                            num_clients = MAX_CLIENTS
+                            args["clients"] = num_clients / MAX_CLIENTS
+                        #debug("Exp: sys {}, size {}, message {}, num clients {}, concurrent clients {}".format(args["system"], size, message, num_clients, args["clients"]))
                         run_tput_exp(args, trial, BASE_SIZE, num_clients, message)
+                        args["clients"] = original_clients
 
+def num_clients_list(num_clients):
+    divisors = [2, 3, 4, 5, 6, 8]
+    if (num_clients <= MAX_CLIENTS or num_clients == 9):
+        return [num for num in range(1, num_clients + 1)]
+    else:
+        # must be divisble by MAX_CLIENTS
+        if (num_clients % MAX_CLIENTS != 0):
+            debug("Num clients must be divisible by {}".format(MAX_CLIENTS))
+            exit(1)
+        divisor = int(num_clients / MAX_CLIENTS)
+        clients = [num for num in range(1, MAX_CLIENTS + 1)]
+        for d in divisors:
+            if d <= divisor:
+                clients.append(MAX_CLIENTS * d)
+        print(clients)
+        return clients
 
 def parse_params(args):
     with open(args.yaml) as f:
@@ -311,21 +341,26 @@ def parse_params(args):
         # for run individual script, just set the first
         data["system"] = args.system[0]
     data["num_clients"] = args.num_clients # number of available clients to
+    data["clients_list"] = num_clients_list(data["num_clients"])
     data["logfile"] = args.logfile # folder
     data["pprint"] = args.pprint # just print commands
     data["clients"] = args.clients
     data["perf"] = args.perf
     data["zero_copy"] = args.zero_copy
     data["retry"] = True if (not(args.no_retries)) else False
+    if data["zero_copy"]:
+        assert("baseline" in data["system"])
+        data["system"] = "baseline_zero_copy"
+        data["systems"] = ["baseline_zero_copy"]
     if "segments" in args:
         data["segments"] = args.segments
-        if args.segments > 1 and args.system != ["baseline"]:
+        if args.segments > 1 and "baseline" not in args.system:
             debug("For segments greater than 1, system has to be baseline, not ", args.system)
             exit(1)
         if args.segments > 1:
             debug("Setting segments as {}.".format(args.segments))
-            data["system"] = "baseline_seg{}".format(args.segments)
-            data["systems"] = ["baseline_seg{}".format(args.segments)]
+            data["system"] = "{}_seg{}".format(data["system"], args.segments)
+            data["systems"] = ["{}_seg{}".format(data["system"], args.segments)]
     if "experiment" in args:
         data["experiment"] = args.experiment # size or depth
         if args.experiment == "depth":
@@ -337,7 +372,8 @@ def main():
     args = parse_args()
     data = parse_params(args)
     # run cleanup
-    cleanup(data)
+    if not data["pprint"]:
+        cleanup(data)
     cycle_exps(data)
 
     

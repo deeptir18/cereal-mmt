@@ -1,8 +1,9 @@
 from common import start_client, start_server, kill_client, kill_server, cleanup, debug, parse_params, run_tput_exp
-from parse_data import parse_log, convert_tput
+from parse_data import parse_log, convert_tput, parse_latencies, NUM_REQUESTS
 import os
 import argparse
 from pathlib import Path
+import heapq
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -65,13 +66,22 @@ def analyze_exp(data, final_path, num_clients):
     p99s = []
     medians = []
     all_retries = 0
+    use_logged_latencies = True
+    all_latencies = []
     for i in range(1, num_clients + 1):
         client_err = "{}/client{}.err.log".format(final_path, i)
         client_log = "{}/client{}.log".format(final_path, i)
+        latencies_log = "{}/client{}.latencies.log".format(final_path, i)
         if not(os.path.exists(final_path)):
             debug("Path {} does not exist".format(final_path))
             return
         latencies = parse_log(client_err)
+        latency_list = parse_latencies(latencies_log)
+        if len(latency_list) != NUM_REQUESTS:
+            use_logged_latencies = False
+        else:
+            all_latencies.append(latency_list) # to eventually sort them all
+        
         retries_dict = parse_log(client_log)
         if len(retries_dict) > 0:
             retries = int(retries_dict["retries"])
@@ -84,7 +94,8 @@ def analyze_exp(data, final_path, num_clients):
         p99s.append(p99)
         medians.append(median)
         all_retries += retries
-        tput = 1.0 / avg * 1000
+        # there could be concurrent clients per client folder
+        tput = 1.0 * data["clients"] / avg * 1000
         tput_converted = convert_tput(tput, data["size"])
         debug("Client {} tput: {:.2f} req/ms | {:.2f} Gbps,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(
             i, tput, tput_converted, avg, p99, median, retries))
@@ -92,8 +103,15 @@ def analyze_exp(data, final_path, num_clients):
     avg = mean(avgs)
     p99 = mean(p99s)
     median = mean(medians)
-    tput = 1.0 * num_clients / (avg) * 1000
+    tput = 1.0 * num_clients * data["clients"]/ (avg) * 1000
     tput_converted = convert_tput(tput, data["size"])
+    # calculate true statistics
+    if use_logged_latencies:
+        sorted_latencies = list(heapq.merge(*all_latencies))
+        median = sorted_latencies[int(len(sorted_latencies)/2)] / float(1000) # convert to us
+        p99 = sorted_latencies[int(len(sorted_latencies) * .99)] / float(1000) # conver to us
+    else:
+        debug("For folder {}, using pre-caculated percentiles".format(final_path))
     debug("Tput: {:.2f} req/ms | {:.2f} Gbps, avg: {:.2f} us, median: {:.2f} us, p99: {:.2f} us, {} retries".format(
         tput, tput_converted,
         avg, median, p99, all_retries))
@@ -110,6 +128,8 @@ def main():
     # setup folder 
     message = None if ("baseline" in data["system"]) else args.message
     exp = "{}clients".format(args.num_clients)
+    if args.clients > 1:
+        exp = "{}clients".format(args.num_clients * args.clients)
     full_path = "{}/{}/{}/size_{}/{}".format(
             args.logfile,
             data["system"],
