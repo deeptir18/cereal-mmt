@@ -17,6 +17,11 @@ def convert_tput(tput, size):
     return tput * 1000 * size * 8 / 1000000000
 
 
+def parse_num_clients(string):
+    fmt = parse.compile("Number of clients: {}")
+    num_clients = fmt.parse(string)
+    return num_clients
+
 def parse_latency_fmt(string):
     fmt = parse.compile("LATENCY end-to-end: {} {} {} {}/{} {} {} {} ({} samples, {} {} total)")
     lmin, min_unit, lavg, avg_unit, lmedian, median_unit, lmax, max_unit, num_samples, total, total_unit = fmt.parse(string)

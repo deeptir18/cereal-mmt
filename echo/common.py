@@ -46,7 +46,7 @@ def parse_args():
                         required=True)
     parser.add_argument("-s", "--system",
                         choices = ["protobuf", "baseline",
-                            "flatbuffers", "capnproto",
+                            "flatbuffers", "capnproto", "cornflakes",
                             "malloc_baseline", "protobytes", "malloc_no_str",
                             "memcpy", "single_memcpy"],
                         nargs = "+",
@@ -160,8 +160,11 @@ def start_server(args, trial, exp, size, message = None):
     proc = multiprocessing.Process(target = run_cmd, args=(cmd, host, args, True))
     return proc
 
-def start_client(args, idx, trial, exp, size, message = None):
+def start_client(args, idx, trial, exp, size, message = None, iteration_multiplier = 1):
+    original_iterations = args["iterations"]
+    args["iterations"] = original_iterations * iteration_multiplier
     cmd = "sudo {exec_dir}/{libos}-client --port {port} --config-path {config_path} -i {iterations}".format(**args)
+    args["iterations"] = original_iterations
     if args["retry"]:
         cmd += " --retry"
     cmd += " -s {}".format(size)
@@ -245,6 +248,8 @@ def run_cmd(cmd, host, args, fail_ok = False):
 
         return
 def run_tput_exp(args, trial, size, num_clients, message = None):
+    # if num_clients > MAX_CLIENTS but < MAX_CLIENTS * 2 (non-integer), need to
+    # know how many clients per script
     debug("Num clients: {}".format(num_clients))
     # start server
     exp = "{}clients".format(num_clients)
@@ -271,8 +276,19 @@ def run_tput_exp(args, trial, size, num_clients, message = None):
     
     # start each client
     client_procs = []
-    for i in range(1, num_clients + 1):
-        client_procs.append(start_client(args, i, trial, exp, size, message))
+    original_clients = args["clients"]
+    for i in range(1, min(MAX_CLIENTS + 1, num_clients + 1)):
+        iteration_multiplier = 1
+        if (num_clients > MAX_CLIENTS) and (num_clients % MAX_CLIENTS != 0):
+            min_num_clients = int(num_clients / MAX_CLIENTS)
+            max_num_clients = min_num_clients + 1
+            if (i <= num_clients % MAX_CLIENTS):
+                args["clients"] = max_num_clients
+                iteration_multiplier = int(num_clients / MAX_CLIENTS) + 1
+            else:
+                args["clients"] = min_num_clients
+        client_procs.append(start_client(args, i, trial, exp, size, message, iteration_multiplier))
+        args["clients"] = original_clients
     
     if args["pprint"]:
         return
@@ -297,7 +313,8 @@ def cycle_exps(args):
             if args["experiment"] == "size":
                 for size in reversed(SIZES):
                     for num_clients in args["clients_list"]:
-                        if num_clients > MAX_CLIENTS:
+                        if num_clients > MAX_CLIENTS and (num_clients %
+                                MAX_CLIENTS == 0):
                             args["clients"] = int(num_clients / MAX_CLIENTS)
                             num_clients = MAX_CLIENTS
                         message = BASE_MESSAGE if "baseline" not in args["system"] else None
@@ -315,8 +332,9 @@ def cycle_exps(args):
                         args["clients"] = original_clients
 
 def num_clients_list(num_clients):
-    divisors = [2, 3, 4, 5, 6, 8]
-    if (num_clients <= MAX_CLIENTS or num_clients == 9):
+    # this is just to define which numbers of clients to cycle through
+    divisors = [2, 3, 4, 5, 6]
+    if (num_clients <= MAX_CLIENTS * 2):
         return [num for num in range(1, num_clients + 1)]
     else:
         # must be divisble by MAX_CLIENTS

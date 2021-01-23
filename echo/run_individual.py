@@ -4,6 +4,7 @@ import os
 import argparse
 from pathlib import Path
 import heapq
+MAX_CLIENTS = 8
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -18,7 +19,7 @@ def parse_args():
                         required=True)
     parser.add_argument("-sys", "--system",
                         choices = ["protobuf", "baseline",
-                        "flatbuffers", "capnproto",
+                        "flatbuffers", "capnproto", "cornflakes",
                         "malloc_baseline","protobytes", "malloc_no_str",
                         "memcpy", "single_memcpy"],
                         nargs="+", # for compatibility with the other script
@@ -61,14 +62,21 @@ def parse_args():
 def mean(arr):
     return sum(arr)/float(len(arr))
 
-def analyze_exp(data, final_path, num_clients):
+def analyze_exp(data, final_path, num_clients, concurrent_clients):
     avgs = []
     p99s = []
     medians = []
     all_retries = 0
     use_logged_latencies = True
     all_latencies = []
-    for i in range(1, num_clients + 1):
+    for i in range(1, min(num_clients + 1, MAX_CLIENTS + 1)):
+        if (num_clients > MAX_CLIENTS) and num_clients % MAX_CLIENTS != 0:
+            min_num_clients = int(num_clients / MAX_CLIENTS)
+            max_num_clients = min_num_clients + 1
+            if (i <= num_clients % MAX_CLIENTS):
+                concurrent_clients = max_num_clients
+            else:
+                concurrent_clients = min_num_clients
         client_err = "{}/client{}.err.log".format(final_path, i)
         client_log = "{}/client{}.log".format(final_path, i)
         latencies_log = "{}/client{}.latencies.log".format(final_path, i)
@@ -77,7 +85,7 @@ def analyze_exp(data, final_path, num_clients):
             return
         latencies = parse_log(client_err)
         latency_list = parse_latencies(latencies_log)
-        if len(latency_list) != NUM_REQUESTS:
+        if len(latency_list) % NUM_REQUESTS != 0:
             use_logged_latencies = False
         else:
             all_latencies.append(latency_list) # to eventually sort them all
@@ -95,10 +103,11 @@ def analyze_exp(data, final_path, num_clients):
         medians.append(median)
         all_retries += retries
         # there could be concurrent clients per client folder
-        tput = 1.0 * data["clients"] / avg * 1000
+        tput = 1.0 * concurrent_clients / avg * 1000
         tput_converted = convert_tput(tput, data["size"])
-        debug("Client {} tput: {:.2f} req/ms | {:.2f} Gbps,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(
-            i, tput, tput_converted, avg, p99, median, retries))
+        debug("Client {} [{} concurrent] tput: {:.2f} req/ms | {:.2f} Gbps,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(
+            i, concurrent_clients,
+            tput, tput_converted, avg, p99, median, retries))
     # full tput
     avg = mean(avgs)
     p99 = mean(p99s)
@@ -130,6 +139,11 @@ def main():
     exp = "{}clients".format(args.num_clients)
     if args.clients > 1:
         exp = "{}clients".format(args.num_clients * args.clients)
+    if args.num_clients > MAX_CLIENTS:
+        if args.num_clients % MAX_CLIENTS == 0:
+            args.clients = (args.num_clients / MAX_CLIENTS)
+            args.num_clients = MAX_CLIENTS
+            print(args.clients)
     full_path = "{}/{}/{}/size_{}/{}".format(
             args.logfile,
             data["system"],
@@ -137,6 +151,7 @@ def main():
             args.size,
             exp)
     full_path = Path(full_path)
+    debug("Running exp: path {}", full_path)
 
     # count the number of trials already in this directory
     num_trials = 0
@@ -151,13 +166,13 @@ def main():
         full_path = full_path / trial
         run_tput_exp(data, num_trials, args.size, args.num_clients, message)
         if not data["pprint"]:
-            analyze_exp(data, full_path, args.num_clients)
+            analyze_exp(data, full_path, args.num_clients, args.clients)
     else:
         for n in range(0, num_trials):  
             debug("######Analysis for trial {}#######".format(num_trials - 1))
             trial = "trial_{}".format(n)
             path = full_path / trial
-            analyze_exp(data, path, args.num_clients)
+            analyze_exp(data, path, args.num_clients, args.clients)
         
 
 if __name__ == '__main__':

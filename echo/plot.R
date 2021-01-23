@@ -25,9 +25,11 @@ base_plot <- function(data) {
                        y = mmt,
                        color = system)) +
             expand_limits(x = 0, y = 0) +
-            geom_line(size=0.5) +
-            geom_point(size=1) +
-            labs(x = "Throughput (Requests/ms)", y = "Latency (microseconds)") +
+            geom_line(size=1) +
+            geom_point(size=3, aes(shape=system)) +
+            labs(x = "Throughput (Requests/ms)", y = "Latency (µs)") +
+            scale_color_brewer(palette = 2, type = "qual", labels= c("baseline" = "No Serialization", "baseline_zero_copy" = "Optimal", "flatbuffers" = "Flatbuffers", "capnproto" = "Capnproto", "protobuf" = "Protobuf", "protobytes" ="Protobytes")) +
+            scale_shape_discrete(labels= c("baseline" = "No Serialization", "baseline_zero_copy" = "Optimal", "flatbuffers" = "Flatbuffers", "capnproto" = "Capnproto", "protobuf" = "Protobuf", "protobytes" ="Protobytes")) +
             theme_light() +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -61,11 +63,11 @@ full_plot <- function(data) {
 
 specific_plot <- function(data) {
     # print(data)
-    y_label = "Avg Latency (microseconds)"
+    y_label = "Avg Latency (µs)"
     if (args[6] == "avgmedian") {
-        y_label = "Median Latency (microseconds)"
+        y_label = "Median Latency (µs)"
     } else if (args[6] == "mp99") {
-        y_label = "P99 Latency (microseconds)"
+        y_label = "p99 Latency (µs)"
     }
     data <- subset(data, data$latency == args[6])
     plot <- base_plot(data) +
