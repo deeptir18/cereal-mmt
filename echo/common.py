@@ -27,13 +27,14 @@ Usage:
 ## CONSTANTS #########################################################
 #SIZES = [100, 500, 1000, 2000, 4000, 4096, 6000, 8000]
 # SIZES = [128, 256, 512, 768, 1024, 2048, 4096, 8192] # for the PCIe experiments
-SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+# SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+SIZES = [1024]
 BASE_MESSAGE = "Get"
 BASE_SIZE = 4096
 MESSAGES = ["Get", "Msg1L", "Msg2L",
             "Msg3L", "Msg4L", "Msg5L"]
-NUM_TRIALS = 5 # finish trials 4 and 5 later
-MAX_CLIENTS = 8
+NUM_TRIALS = 10 # finish trials 4 and 5 later
+MAX_CLIENTS = 10
 ######################################################################
 def debug(*args):
     prepend = "\u2192"
@@ -115,10 +116,9 @@ def connection(args, host):
 # kill any rogue processes on server
 def cleanup(args):
     cleanup_server(args)
-    for idx in range(1, 10):
+    for idx in range(1, 11):
         kill_client(args, idx)
     debug("Done with  cleanup, starting experiment.")
-    # exit(1)
 
 def start_server(args, trial, exp, size, message = None):
     # prepare the logpath
@@ -162,9 +162,8 @@ def start_server(args, trial, exp, size, message = None):
 
 def start_client(args, idx, trial, exp, size, message = None, iteration_multiplier = 1):
     original_iterations = args["iterations"]
-    args["iterations"] = original_iterations * iteration_multiplier
+    args["iterations"] = original_iterations * args["clients"]
     cmd = "sudo {exec_dir}/{libos}-client --port {port} --config-path {config_path} -i {iterations}".format(**args)
-    args["iterations"] = original_iterations
     if args["retry"]:
         cmd += " --retry"
     cmd += " -s {}".format(size)
@@ -190,6 +189,7 @@ def start_client(args, idx, trial, exp, size, message = None, iteration_multipli
         return
     
     proc = multiprocessing.Process(target = run_cmd, args = (cmd, host, args))
+    args["iterations"] = original_iterations
     return proc
 
 def cleanup_server(args):
@@ -276,19 +276,9 @@ def run_tput_exp(args, trial, size, num_clients, message = None):
     
     # start each client
     client_procs = []
-    original_clients = args["clients"]
     for i in range(1, min(MAX_CLIENTS + 1, num_clients + 1)):
         iteration_multiplier = 1
-        if (num_clients > MAX_CLIENTS) and (num_clients % MAX_CLIENTS != 0):
-            min_num_clients = int(num_clients / MAX_CLIENTS)
-            max_num_clients = min_num_clients + 1
-            if (i <= num_clients % MAX_CLIENTS):
-                args["clients"] = max_num_clients
-                iteration_multiplier = int(num_clients / MAX_CLIENTS) + 1
-            else:
-                args["clients"] = min_num_clients
         client_procs.append(start_client(args, i, trial, exp, size, message, iteration_multiplier))
-        args["clients"] = original_clients
     
     if args["pprint"]:
         return
@@ -312,13 +302,9 @@ def cycle_exps(args):
             args["system"] = system
             if args["experiment"] == "size":
                 for size in reversed(SIZES):
-                    for num_clients in args["clients_list"]:
-                        if num_clients > MAX_CLIENTS and (num_clients %
-                                MAX_CLIENTS == 0):
-                            args["clients"] = int(num_clients / MAX_CLIENTS)
-                            num_clients = MAX_CLIENTS
+                    for (num_clients, concurrent) in args["clients_list"]:
+                        args["clients"] = concurrent
                         message = BASE_MESSAGE if "baseline" not in args["system"] else None
-                        #debug("Exp: sys {}, size {}, message {}, num clients {}, concurrent clients {}".format(args["system"], size, message, num_clients, args["clients"]))
                         run_tput_exp(args, trial, size, num_clients, message)
                         args["clients"] = original_clients
             else:
@@ -333,6 +319,11 @@ def cycle_exps(args):
 
 def num_clients_list(num_clients):
     # this is just to define which numbers of clients to cycle through
+    divisor = 2
+    ret = [(x,1) for x in range(1, 11)]
+    arr = [(8,2), (9,2), (10,2), (10,3), (10, 4)]
+    ret.extend(arr)
+    return ret
     divisors = [2, 3, 4, 5, 6]
     if (num_clients <= MAX_CLIENTS * 2):
         return [num for num in range(1, num_clients + 1)]

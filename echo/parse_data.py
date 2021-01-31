@@ -4,14 +4,20 @@ import re
 import sys
 import argparse
 import parse
-from common import MESSAGES, SIZES, BASE_SIZE, debug
+from common import MESSAGES, SIZES, BASE_SIZE, debug, num_clients_list
 import heapq
 import math
-NUM_REQUESTS = 500000
-MAX_CLIENTS = 8
+import multiprocessing as mp
+from statistics import mean
+MAX_CLIENTS = 10
+STRIP_PERCENT = .03
 
-def mean(arr):
-    return sum(arr)/float(len(arr))
+def mean_func(arr):
+    return mean(arr)
+def median_func(arr):
+    return arr[int(len(arr) * 0.50)]
+def p99_func(arr):
+    return arr[int(len(arr) * 0.99)]
 
 def convert_tput(tput, size):
     return tput * 1000 * size * 8 / 1000000000
@@ -119,7 +125,7 @@ def parse_log(logfile):
     return latency
 
 
-def parse_folder(f, final_path, system, message, size, trial, num_clients):
+def parse_folder(final_path, system, message, size, trial, num_clients):
     tputs = []
     p99s = []
     medians = []
@@ -128,51 +134,39 @@ def parse_folder(f, final_path, system, message, size, trial, num_clients):
     complete_latencies = []
     use_logged_latencies = True
     debug("Parsing folder {}", final_path)
-    for i in range(1, min(num_clients + 1, MAX_CLIENTS + 1)):
+    clients_list  = num_clients_list(num_clients)
+    for (machines, concurrent) in clients_list:
+        if machines * concurrent == num_clients:
+            break
+    for i in range(1, min(machines + 1, MAX_CLIENTS + 1)):
         client_err = "{}/client{}.err.log".format(final_path, i)
         client_log = "{}/client{}.log".format(final_path, i)
         latencies_log = "{}/client{}.latencies.log".format(final_path, i)
         if not(os.path.exists(final_path)):
             debug("Path {} does not exist".format(final_path))
-            return
-        latencies = parse_log(client_err)
+            return ""
         retries = parse_log(client_log)
         latency_list = parse_latencies(latencies_log)
-        if len(latency_list) != NUM_REQUESTS:
-            use_logged_latencies = False
-        else:
-            complete_latencies.append(latency_list) # to eventually sort them all
+        complete_latencies.append(latency_list) # to eventually sort them all
+        
         if len(retries) != 0:
             all_retries += int(retries["retries"])
-        if len(latencies) == 0:
+        if len(latency_list) == 0:
             debug("Path {} has an error".format(final_path))
-            return
-        avg = latencies["avg"]/float(1000000) # milliseconds
-        p99 = latencies["p99"]/float(1000) # microseconds
-        median = latencies["median"]/float(1000) # microseconds
-        avgs.append(avg)
-        p99s.append(p99)
-        medians.append(median)
+            return ""
 
-    avg = mean(avgs)
-    tput = float(num_clients) / avg
+    # take advantage of the fact that they're already sorted to make this faster
+    sorted_latencies = list(heapq.merge(*complete_latencies))
+    median = median_func(sorted_latencies) / float(1000)
+    p99 = p99_func(sorted_latencies) / float(1000)
+    avg = mean_func(sorted_latencies) / float(1000)
+    tput = 1.0 * num_clients / avg * 1000
     tput_converted = convert_tput(tput, size)
-    median = mean(medians)
-    p99 = mean(p99s)
-
-    # calculate true statistics
-    if use_logged_latencies:
-        # take advantage of the fact that they're already sorted to make this faster
-        sorted_latencies = list(heapq.merge(*complete_latencies))
-        median = sorted_latencies[int(len(sorted_latencies)/2)] / float(1000)
-        p99 = sorted_latencies[int(len(sorted_latencies) * .99)] / float(1000)
-    else:
-        debug("For folder {}, using pre-caculated percentiles".format(final_path))
     
-    f.write("{},{},{},{},{},{},{},{},{},{}\n".format(
+    return "{},{},{},{},{},{},{},{},{},{}\n".format(
             system,size,message,num_clients,median,avg*1000,p99,tput,
             tput_converted,
-            all_retries))
+            all_retries)
 
 def parse_latencies(log):
     if not (os.path.exists(log)):
@@ -181,6 +175,9 @@ def parse_latencies(log):
     with open(log) as f:
         raw_lines = f.readlines()
         lines = [int(line.strip()) for line in raw_lines]
+    front_cutoff = int(len(lines) * STRIP_PERCENT)
+    end_cutoff = int(len(lines) * (1.0 - STRIP_PERCENT))
+    lines = lines[front_cutoff:end_cutoff]
     return sorted(lines)
 
 
@@ -192,6 +189,8 @@ def get_suffix(arg):
         exit(1)
 
 def iterate(f, args):
+    pool = mp.Pool(mp.cpu_count())
+    pool_args = []
     current_path = Path(args.logfile)
     for system_name in os.listdir(args.logfile):
         if not(os.path.isdir(current_path / system_name)) or system_name == "plots":
@@ -210,10 +209,13 @@ def iterate(f, args):
                     for trial_name in os.listdir((current_path / system_name / message / size_name / clients_name)):                    
                         trial = int(get_suffix(trial_name))
                         final_path = ( current_path / system_name / message / size_name / clients_name / trial_name)
-                        try:
-                            parse_folder(f, final_path, system_name, message, size, trial, num_clients)
-                        except:
-                            continue
+                        pool_args.append([final_path, system_name, message,
+                            size, trial, num_clients])
+                            
+    ret = pool.starmap(parse_folder, pool_args)
+    for line in ret:
+        if line != "":
+            f.write(line)
                         
 def get_clients(name):
     return int(name.replace("clients", ""))

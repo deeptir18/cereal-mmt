@@ -13,7 +13,7 @@ showtext_auto()
 args <- commandArgs(trailingOnly=TRUE)
 d <- read.csv(args[1])
 d <- subset(d, d$num_clients == args[3])
-labels <- c("baseline" = "Copy Out", "baseline_zero_copy" = "Zero Copy")
+labels <- c("baseline" = "Copy-Out", "baseline_zero_copy" = "Zero-Copy")
 summarized <- ddply(d, c("system", "size", "message", "num_clients"),
                     summarise,
                     mtput = mean(tputgbps),

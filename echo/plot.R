@@ -4,36 +4,54 @@ library(ggplot2)
 library(plyr)
 library(tidyr)
 library(extrafont)
+library(ggforce)
 library(showtext)
 font_add_google("Fira Sans")
 showtext_auto()
+labels <- c("protobuf" = "Protobuf", "protobytes" ="Protobytes", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "baseline" = "No Serialization", "baseline_zero_copy" = "Optimal")
 
 args <- commandArgs(trailingOnly=TRUE)
 d <- read.csv(args[1])
-d <- subset(d, d$num_clients <= 48)
+#d <- subset(d, d$num_clients <= 10)
+#d <- subset(d, d$num_clients != 8)
+d <- subset(d, d$num_clients != 12 & d$num_clients != 14)
 WIDTH <- 0.90
+d$system <- factor(d$system, levels = c('protobuf', 'protobytes', 'capnproto', 'flatbuffers', 'baseline', 'baseline_zero_copy'))
+shape_values <- c('protobuf' = 7, 'protobytes' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'baseline' = 15, 'baseline_zero_copy' = 16)
 summarized <- ddply(d, c("system", "size", "message", "num_clients"),
                     summarise,
-                    mtput = mean(tput),
-                    mavg = mean(avg),
-                    mp99 = mean(p99),
-                    avgmedian = mean(median))
+                    mtput = median(tput),
+                    mavg = median(avg),
+                    mp99 = median(p99),
+                    avgmedian = median(median))
 gathered <- gather(summarized, key="latency", value = "mmt", -system, -size, -message, -num_clients, -mtput)
 base_plot <- function(data) {
+    data$ymin <- data$mmt - data$mp99_sd
+    data$ymax <- data$mmt - data$mp99_sd
+
     plot <- ggplot(data,
                    aes(x = mtput,
                        y = mmt,
-                       color = system)) +
+                       color = system,
+                       # fill = system,
+                       shape = system,
+                       # xmin = mtput - mtput_sd,
+                       # xmax = mtput - mtput_sd,
+                       ymin = ymin,
+                       ymax = ymax)) +
             expand_limits(x = 0, y = 0) +
-            geom_line(size=1) +
-            geom_point(size=3, aes(shape=system)) +
+            geom_point(size=4) +
+            #geom_ribbon(alpha = 0.3) +
+            geom_line(size = 1, aes(color=system)) +
             labs(x = "Throughput (Requests/ms)", y = "Latency (µs)") +
-            scale_color_brewer(palette = 2, type = "qual", labels= c("baseline" = "No Serialization", "baseline_zero_copy" = "Optimal", "flatbuffers" = "Flatbuffers", "capnproto" = "Capnproto", "protobuf" = "Protobuf", "protobytes" ="Protobytes")) +
-            scale_shape_discrete(labels= c("baseline" = "No Serialization", "baseline_zero_copy" = "Optimal", "flatbuffers" = "Flatbuffers", "capnproto" = "Capnproto", "protobuf" = "Protobuf", "protobytes" ="Protobytes")) +
+            scale_shape_manual(values = shape_values, labels = labels) +
+            scale_color_brewer(direction = -1, palette = 2, type = "qual",labels = labels) +
             theme_light() +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
-                  legend.title = element_blank())
+                  legend.title = element_blank(),
+                  legend.key.size = unit(10, 'mm'),
+                  legend.spacing.x = unit(0.1, 'cm'))
     return(plot)
 }
 size_plot <- function(data) {
@@ -73,7 +91,7 @@ specific_plot <- function(data) {
     plot <- base_plot(data) +
             labs(x = "Throughput (Gbps)", y = y_label) +
             theme(legend.position = "top",
-                  legend.text=element_text(size=17),
+                  legend.text=element_text(size=20),
                   axis.title=element_text(size=27,face="plain", colour="#000000"),
                   axis.text=element_text(size=27, colour="#000000"))
 
@@ -94,10 +112,10 @@ if (args[3] == "size") {
     # full graph
     summary <- ddply(d, c("system", "num_clients", "size",  "message"),
                     summarise,
-                    mtput = mean(tputgbps),
-                    mavg = mean(avg),
-                    mp99 = mean(p99),
-                    avgmedian = mean(median))
+                    mtput = median(tputgbps),
+                    mavg = median(avg),
+                    mp99 = median(p99),
+                    avgmedian = median(median))
     g <- gather(summary, key="latency", value = "mmt", -system, -message, -size, - num_clients, -mtput)
     data_plot <- full_plot(g)
 
@@ -108,8 +126,11 @@ if (args[3] == "size") {
                     mtput = mean(tputgbps),
                     mavg = mean(avg),
                     mp99 = mean(p99),
+                    mtput_sd = sd(tputgbps),
+                    mp99_sd = sd(p99),
                     avgmedian = mean(median))
-    g <- gather(summary, key="latency", value = "mmt", -system, -message, -size, - num_clients, -mtput)
+    g <- gather(summary, key="latency", value = "mmt", -system, -message, -size, - num_clients, -mtput, -mtput_sd, -mp99_sd)
+    print(summary)
     specific_subset <- subset(g, g$size == specific_size)
     specific_plot(specific_subset)
 
