@@ -1,66 +1,70 @@
 from common import start_client, start_server, kill_client, kill_server, cleanup, debug, parse_params, run_tput_exp
-from parse_data import parse_log, convert_tput, parse_latencies,p99_func,mean_func,median_func
+from parse_data import parse_log, convert_tput, parse_latencies, p99_func, mean_func, median_func
 import os
 import argparse
 from pathlib import Path
 import heapq
 MAX_CLIENTS = 10
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-a", "--analyze",
-                        help = "Analyze only",
-                        action = "store_true")
+                        help="Analyze only",
+                        action="store_true")
     parser.add_argument("-pp", "--pprint",
-                        help = "Print out commands that will be run",
+                        help="Print out commands that will be run",
                         action="store_true")
     parser.add_argument("-y", "--yaml",
-                        help = "Experiment yaml file.",
+                        help="Experiment yaml file.",
                         required=True)
     parser.add_argument("-sys", "--system",
-                        choices = ["protobuf", "baseline",
-                        "flatbuffers", "capnproto", "cornflakes",
-                        "malloc_baseline","protobytes", "malloc_no_str",
-                        "memcpy", "single_memcpy"],
-                        nargs="+", # for compatibility with the other script
-                        help = "Which system to benchmark.",
-                        default = "baseline")
-    parser.add_argument("-seg", "--segments", type=int, help = "Number of segments in sga.", default = 1)
+                        choices=["protobuf", "baseline",
+                                 "flatbuffers", "capnproto", "cornflakes",
+                                 "malloc_baseline", "protobytes", "malloc_no_str",
+                                 "memcpy", "single_memcpy"],
+                        nargs="+",  # for compatibility with the other script
+                        help="Which system to benchmark.",
+                        default="baseline")
+    parser.add_argument("-seg", "--segments", type=int,
+                        help="Number of segments in sga.", default=1)
     parser.add_argument("-m", "--message",
-                        help = "message",
-                        default = "get")
+                        help="message",
+                        default="get")
     parser.add_argument("-o", "--libos",
                         help="libos to run",
-                        choices = ["dmtr-lwip", "dmtr-rdma", "dmtr-posix"],
-                        default = "dmtr-lwip")
+                        choices=["dmtr-lwip", "dmtr-rdma", "dmtr-posix"],
+                        default="dmtr-lwip")
     parser.add_argument("-n", "--num_clients",
-                        type = int,
-                        help = "Number of clients (for throughput benchmark)",
-                        default = 1)
+                        type=int,
+                        help="Number of clients (for throughput benchmark)",
+                        default=1)
     parser.add_argument("-l", "--logfile",
-                        help = "Base logfile.",
-                        required = True)
+                        help="Base logfile.",
+                        required=True)
     parser.add_argument("-c", "--clients",
-                        help = "Number of client threads within the echo server.",
-                        type = int,
-                        default = 1)
+                        help="Number of client threads within the echo server.",
+                        type=int,
+                        default=1)
     parser.add_argument("-s", "--size",
-                        help = "Size of request",
-                        type = int,
-                        default = 100)
+                        help="Size of request",
+                        type=int,
+                        default=100)
     parser.add_argument("-r", "--no_retries",
-                        help = "Run without retries",
-                        action = "store_true")
+                        help="Run without retries",
+                        action="store_true")
     parser.add_argument("-pf", "--perf",
-                        help = "Run perf server side to observe cache statistics",
-                        action = "store_true")
+                        help="Run perf server side to observe cache statistics",
+                        action="store_true")
     parser.add_argument("-z", "--zero_copy",
-                        help = "Zero copy mode on",
-                        action = "store_true")
+                        help="Zero copy mode on",
+                        action="store_true")
     return parser.parse_args()
+
 
 def mean(arr):
     return sum(arr)/float(len(arr))
+
 
 def analyze_exp(data, final_path, num_clients, concurrent_clients):
     all_retries = 0
@@ -73,21 +77,23 @@ def analyze_exp(data, final_path, num_clients, concurrent_clients):
             debug("Path {} does not exist".format(final_path))
             return
         latency_list = parse_latencies(latencies_log)
-        all_latencies.extend(latency_list)
+        all_latencies.append(latency_list)
+
+        retries_dict = parse_log(client_log)
         if len(retries_dict) > 0:
             retries = int(retries_dict["retries"])
         else:
             retries = 0
+
+        all_retries += retries
         avg = mean_func(latency_list) / float(1000)
         p99 = p99_func(latency_list) / float(1000)
         median = median_func(latency_list) / float(1000)
-        all_retries += retries
         # there could be concurrent clients per client folder
         tput = 1.0 * concurrent_clients / avg * 1000
         tput_converted = convert_tput(tput, data["size"])
-        debug("Client {} [{} concurrent] tput: {:.2f} req/ms | {:.2f} Gbps,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries".format(
-            i, concurrent_clients,
-            tput, tput_converted, avg, p99, median, retries))
+        debug("Client {} [{} concurrent] tput: {:.2f} req/ms | {:.2f} Gbps,avg latency: {:.2f} us, p99: {:.2f} us, median: {:.2f} us, {} retries, {} entries".format(i, concurrent_clients,
+                                                                                                                                                                     tput, tput_converted, avg, p99, median, retries, len(latency_list)))
     # full tput
     sorted_latencies = list(heapq.merge(*all_latencies))
     median = median_func(sorted_latencies) / float(1000)
@@ -100,15 +106,13 @@ def analyze_exp(data, final_path, num_clients, concurrent_clients):
         avg, median, p99, all_retries))
 
 
-
-
 def main():
     args = parse_args()
     data = parse_params(args)
     data["size"] = args.size
     if not data["pprint"] and not args.analyze:
         cleanup(data)
-    # setup folder 
+    # setup folder
     message = None if ("baseline" in data["system"]) else args.message
     exp = "{}clients".format(args.num_clients)
     if args.clients > 1:
@@ -119,11 +123,11 @@ def main():
             args.num_clients = MAX_CLIENTS
             print(args.clients)
     full_path = "{}/{}/{}/size_{}/{}".format(
-            args.logfile,
-            data["system"],
-            message,
-            args.size,
-            exp)
+        args.logfile,
+        data["system"],
+        message,
+        args.size,
+        exp)
     full_path = Path(full_path)
     debug("Running exp: path {}", full_path)
 
@@ -142,12 +146,12 @@ def main():
         if not data["pprint"]:
             analyze_exp(data, full_path, args.num_clients, args.clients)
     else:
-        for n in range(0, num_trials):  
-            debug("######Analysis for trial {}#######".format(num_trials - 1))
-            trial = "trial_{}".format(n)
+        for n in range(0, num_trials):
+            debug("######Analysis for trial {}#######".format(num_trials - n))
+            trial = "trial_{}".format(num_trials - n)
             path = full_path / trial
             analyze_exp(data, path, args.num_clients, args.clients)
-        
+
 
 if __name__ == '__main__':
     main()

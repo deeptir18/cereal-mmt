@@ -8,16 +8,25 @@ library(ggforce)
 library(showtext)
 font_add_google("Fira Sans")
 showtext_auto()
-labels <- c("protobuf" = "Protobuf", "protobytes" ="Protobytes", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "baseline" = "No Serialization", "baseline_zero_copy" = "Optimal")
+labels <- c("protobuf" = "Protobuf", "protobytes" ="Protobytes", "capnproto" = "Capnproto", "flatbuffers" = "Flatbuffers", "baseline" = "No Serialization", "baseline_zero_copy" = "DPDK Single Core", 'cornflakes' = "Prototype\nLibrary")
 
 args <- commandArgs(trailingOnly=TRUE)
 d <- read.csv(args[1])
 #d <- subset(d, d$num_clients <= 10)
 #d <- subset(d, d$num_clients != 8)
-d <- subset(d, d$num_clients != 12 & d$num_clients != 14)
+# d <- subset(d, d$num_clients != 12 & d$num_clients != 12)
 WIDTH <- 0.90
-d$system <- factor(d$system, levels = c('protobuf', 'protobytes', 'capnproto', 'flatbuffers', 'baseline', 'baseline_zero_copy'))
-shape_values <- c('protobuf' = 7, 'protobytes' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'baseline' = 15, 'baseline_zero_copy' = 16)
+d$system <- factor(d$system, levels = c('protobuf', 'capnproto', 'protobytes', 'flatbuffers','baseline', 'baseline_zero_copy', 'cornflakes'))
+# d <- subset(d, d$system != 'cornflakes')
+shape_values <- c('protobuf' = 7, 'protobytes' = 4, 'capnproto' = 18, 'flatbuffers' = 17, 'baseline' = 15, 'baseline_zero_copy' = 19, 'cornflakes' = 1)
+color_values <- c('baseline_zero_copy' = '#1b9e77', 
+                    'baseline' = '#d95f02',
+                    'flatbuffers' = '#7570b3',
+                    'capnproto' = '#e7298a',
+                    'protobytes' = '#66a61e',
+                    'protobuf' = '#e6ab02',
+                    'cornflakes' = '#000000')
+line_types <- c('baseline_zero_copy' = 'solid', 'baseline' = 'solid', 'capnproto' = 'solid', 'flatbuffers' = 'solid', 'protobtyes' = 'solid', 'protobuf' = 'solid', 'cornflakes' = 'dashed')
 summarized <- ddply(d, c("system", "size", "message", "num_clients"),
                     summarise,
                     mtput = median(tput),
@@ -41,11 +50,12 @@ base_plot <- function(data) {
                        ymax = ymax)) +
             expand_limits(x = 0, y = 0) +
             geom_point(size=4) +
-            #geom_ribbon(alpha = 0.3) +
             geom_line(size = 1, aes(color=system)) +
             labs(x = "Throughput (Requests/ms)", y = "Latency (µs)") +
             scale_shape_manual(values = shape_values, labels = labels) +
-            scale_color_brewer(direction = -1, palette = 2, type = "qual",labels = labels) +
+            scale_color_manual(values = color_values ,labels = labels) +
+            scale_fill_manual(values = color_values, labels = labels) +
+            scale_linetype_manual(values = line_types, labels = labels) +
             theme_light() +
             theme(legend.position = "top",
                   text = element_text(family="Fira Sans"),
@@ -91,7 +101,7 @@ specific_plot <- function(data) {
     plot <- base_plot(data) +
             labs(x = "Throughput (Gbps)", y = y_label) +
             theme(legend.position = "top",
-                  legend.text=element_text(size=20),
+                  legend.text=element_text(size=18),
                   axis.title=element_text(size=27,face="plain", colour="#000000"),
                   axis.text=element_text(size=27, colour="#000000"))
 

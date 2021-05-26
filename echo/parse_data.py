@@ -76,6 +76,11 @@ def parse_args():
                         type = int,
                         nargs = "+",
                         default = [])
+    parser.add_argument('-n', "--num_clients",
+                        help = "Only parse these num_clients",
+                        type = int,
+                        nargs = "+",
+                        default = [])
     return parser.parse_args()
 
 def parse_to_ns(num, unit):
@@ -206,6 +211,9 @@ def iterate(f, args):
                     continue
                 for clients_name in os.listdir(current_path / system_name / message / size_name):
                     num_clients = get_clients(clients_name)
+                    if (len(args.num_clients) > 0 and num_clients not in args.num_clients):
+                        debug("Skipping {}".format(num_clients))
+                        continue
                     for trial_name in os.listdir((current_path / system_name / message / size_name / clients_name)):                    
                         trial = int(get_suffix(trial_name))
                         final_path = ( current_path / system_name / message / size_name / clients_name / trial_name)
